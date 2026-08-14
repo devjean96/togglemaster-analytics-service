@@ -67,6 +67,18 @@ gunicorn --bind 0.0.0.0:8005 app:app
 ```
 O servidor estará rodando em `http://localhost:8005`. Você verá logs no terminal assim que o worker SQS iniciar e (eventualmente) processar mensagens.
 
+## ✅ Qualidade e testes
+
+```bash
+pip install -r requirements-dev.txt
+ruff check .
+pytest
+docker build -t togglemaster-analytics-service .
+```
+
+O workflow `.github/workflows/ci.yml` executa lint, testes unitários com cobertura mínima
+de 90% e, após essas verificações, valida o build da imagem Docker.
+
 ## 🧪 Testando o Serviço
 
 Testar este serviço é diferente. Você não vai chamar uma API dele.
