@@ -83,6 +83,7 @@ def test_worker_processes_received_messages(app_module, aws_clients, message, mo
         QueueUrl="https://sqs.example.test/analytics",
         MaxNumberOfMessages=10,
         WaitTimeSeconds=20,
+        MessageAttributeNames=["All"],
     )
 
 

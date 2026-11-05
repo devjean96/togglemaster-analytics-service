@@ -16,6 +16,7 @@ def app_module(monkeypatch_session):
     monkeypatch_session.setenv("AWS_REGION", "us-east-1")
     monkeypatch_session.setenv("AWS_SQS_URL", "https://sqs.example.test/analytics")
     monkeypatch_session.setenv("AWS_DYNAMODB_TABLE", "ToggleMasterAnalytics")
+    monkeypatch_session.setenv("OTEL_SDK_DISABLED", "true")
 
     import boto3
     import threading

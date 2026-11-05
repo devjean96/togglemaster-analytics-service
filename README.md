@@ -115,3 +115,15 @@ INFO:Evento ... (Flag: enable-new-dashboard) salvo no DynamoDB.
 Vá até o console da AWS, abra o **DynamoDB**, selecione a tabela `ToggleMasterAnalytics` e clique em "Explore table items".
 
 Você verá os itens que o worker acabou de inserir.
+
+## OpenTelemetry e New Relic APM
+
+O SDK é inicializado antes dos clientes Boto3 e antes da thread consumidora. O
+worker solicita todos os `MessageAttributes`, extrai o W3C `traceparent` e cria
+um span `CONSUMER` separado para cada mensagem. SQS e DynamoDB são instrumentados
+via Botocore.
+
+O deployment deve permanecer com um worker Gunicorn enquanto o polling SQS
+estiver embutido no processo web; aumentar `GUNICORN_WORKERS` criaria múltiplas
+threads consumidoras. Corpo da mensagem e identificador do usuário não são
+registrados na telemetria.

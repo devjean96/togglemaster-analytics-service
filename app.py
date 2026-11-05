@@ -9,6 +9,11 @@ import boto3
 from botocore.exceptions import NoCredentialsError, ClientError
 from flask import Flask, jsonify
 from dotenv import load_dotenv
+from opentelemetry import metrics, propagate, trace
+from opentelemetry.context import Context
+from opentelemetry.trace import SpanKind, Status, StatusCode
+
+from telemetry import init_telemetry
 
 # Configura o logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -34,6 +39,22 @@ def validate_config():
 
 validate_config()
 
+app = Flask(__name__)
+init_telemetry(app, default_service_name="analytics-service")
+
+tracer = trace.get_tracer("togglemaster/analytics-service")
+meter = metrics.get_meter("togglemaster/analytics-service")
+message_counter = meter.create_counter(
+    "togglemaster.analytics.messages",
+    unit="1",
+    description="Mensagens de avaliação processadas pelo analytics-service",
+)
+processing_duration = meter.create_histogram(
+    "togglemaster.analytics.processing.duration",
+    unit="ms",
+    description="Tempo de processamento de cada mensagem SQS",
+)
+
 
 # --- Clientes Boto3 ---
 def create_aws_clients():
@@ -58,41 +79,77 @@ sqs_client, dynamodb_client = create_aws_clients()
 # --- SQS Worker ---
 
 
+def _message_carrier(message):
+    attributes = message.get("MessageAttributes", {})
+    return {
+        key: value["StringValue"]
+        for key, value in attributes.items()
+        if key in {"traceparent", "tracestate"} and value.get("StringValue")
+    }
+
+
 def process_message(message):
     """Processa uma única mensagem SQS e a insere no DynamoDB"""
-    try:
-        log.info(f"Processando mensagem ID: {message['MessageId']}")
-        body = json.loads(message["Body"])
+    message_id = message.get("MessageId", "unknown")
+    parent_context = propagate.extract(_message_carrier(message), context=Context())
+    started_at = time.perf_counter()
+    outcome = "success"
 
-        # Gera um ID único para o item no DynamoDB
-        event_id = str(uuid.uuid4())
+    with tracer.start_as_current_span(
+        "sqs.process_evaluation",
+        context=parent_context,
+        kind=SpanKind.CONSUMER,
+        attributes={
+            "messaging.system": "aws_sqs",
+            "messaging.operation.name": "process",
+            "messaging.message.id": message_id,
+        },
+    ) as span:
+        try:
+            log.info(f"Processando mensagem ID: {message_id}")
+            body = json.loads(message["Body"])
+            span.set_attribute("feature_flag.name", body["flag_name"])
 
-        # Constrói o item no formato do DynamoDB
-        item = {
-            "event_id": {"S": event_id},
-            "user_id": {"S": body["user_id"]},
-            "flag_name": {"S": body["flag_name"]},
-            "result": {"BOOL": body["result"]},
-            "timestamp": {"S": body["timestamp"]},
-        }
+            # Gera um ID único para o item no DynamoDB
+            event_id = str(uuid.uuid4())
 
-        # Insere no DynamoDB
-        dynamodb_client.put_item(TableName=DYNAMODB_TABLE_NAME, Item=item)
+            # Constrói o item no formato do DynamoDB
+            item = {
+                "event_id": {"S": event_id},
+                "user_id": {"S": body["user_id"]},
+                "flag_name": {"S": body["flag_name"]},
+                "result": {"BOOL": body["result"]},
+                "timestamp": {"S": body["timestamp"]},
+            }
 
-        log.info(f"Evento {event_id} (Flag: {body['flag_name']}) salvo no DynamoDB.")
+            dynamodb_client.put_item(TableName=DYNAMODB_TABLE_NAME, Item=item)
+            log.info(f"Evento {event_id} (Flag: {body['flag_name']}) salvo no DynamoDB.")
+            sqs_client.delete_message(
+                QueueUrl=SQS_QUEUE_URL, ReceiptHandle=message["ReceiptHandle"]
+            )
+            message_counter.add(1, {"messaging.outcome": outcome})
 
-        # Se tudo deu certo, deleta a mensagem da fila
-        sqs_client.delete_message(QueueUrl=SQS_QUEUE_URL, ReceiptHandle=message["ReceiptHandle"])
-
-    except json.JSONDecodeError:
-        log.error(f"Erro ao decodificar JSON da mensagem ID: {message['MessageId']}")
-        # Não deleta a mensagem, pode ser uma "poison pill"
-    except ClientError as e:
-        log.error(f"Erro do Boto3 (DynamoDB ou SQS) ao processar {message['MessageId']}: {e}")
-        # Não deleta a mensagem, tenta novamente
-    except Exception as e:
-        log.error(f"Erro inesperado ao processar {message['MessageId']}: {e}")
-        # Não deleta a mensagem, tenta novamente
+        except json.JSONDecodeError as error:
+            outcome = "invalid_json"
+            span.record_exception(error)
+            span.set_status(Status(StatusCode.ERROR, outcome))
+            message_counter.add(1, {"messaging.outcome": outcome})
+            log.error(f"Erro ao decodificar JSON da mensagem ID: {message_id}")
+        except ClientError as error:
+            outcome = "aws_error"
+            span.record_exception(error)
+            span.set_status(Status(StatusCode.ERROR, outcome))
+            message_counter.add(1, {"messaging.outcome": outcome})
+            log.error(f"Erro do Boto3 ao processar {message_id}: {error}")
+        except Exception as error:
+            outcome = "unexpected_error"
+            span.record_exception(error)
+            span.set_status(Status(StatusCode.ERROR, outcome))
+            message_counter.add(1, {"messaging.outcome": outcome})
+            log.error(f"Erro inesperado ao processar {message_id}: {error}")
+        finally:
+            elapsed_ms = (time.perf_counter() - started_at) * 1000
+            processing_duration.record(elapsed_ms, {"messaging.outcome": outcome})
 
 
 def sqs_worker_loop():
@@ -105,6 +162,7 @@ def sqs_worker_loop():
                 QueueUrl=SQS_QUEUE_URL,
                 MaxNumberOfMessages=10,  # Processa em lotes de até 10
                 WaitTimeSeconds=20,
+                MessageAttributeNames=["All"],
             )
 
             messages = response.get("Messages", [])
@@ -126,8 +184,6 @@ def sqs_worker_loop():
 
 
 # --- Servidor Flask (Apenas para Health Check) ---
-
-app = Flask(__name__)
 
 
 @app.route("/health")
