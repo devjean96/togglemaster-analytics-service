@@ -23,10 +23,10 @@ def test_process_message_stores_event_and_deletes_message(
         TableName="ToggleMasterAnalytics",
         Item={
             "event_id": {"S": "event-1"},
+            "occurred_at": {"S": "2026-08-13T12:00:00Z"},
             "user_id": {"S": "user-1"},
             "flag_name": {"S": "checkout"},
             "result": {"BOOL": True},
-            "timestamp": {"S": "2026-08-13T12:00:00Z"},
         },
     )
     sqs_client.delete_message.assert_called_once_with(

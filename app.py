@@ -116,10 +116,10 @@ def process_message(message):
             # Constrói o item no formato do DynamoDB
             item = {
                 "event_id": {"S": event_id},
+                "occurred_at": {"S": body["timestamp"]},
                 "user_id": {"S": body["user_id"]},
                 "flag_name": {"S": body["flag_name"]},
                 "result": {"BOOL": body["result"]},
-                "timestamp": {"S": body["timestamp"]},
             }
 
             dynamodb_client.put_item(TableName=DYNAMODB_TABLE_NAME, Item=item)

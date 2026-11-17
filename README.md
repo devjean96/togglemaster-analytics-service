@@ -22,6 +22,7 @@ Este serviço espera que uma tabela específica exista no DynamoDB.
 
 **Nome da Tabela:** `ToggleMasterAnalytics`
 **Chave Primária (Partition Key):** `event_id` (do tipo String)
+**Chave de Ordenação (Sort Key):** `occurred_at` (do tipo String)
 
 Você pode criar esta tabela usando o console da AWS ou com o seguinte comando da AWS CLI:
 
@@ -30,8 +31,10 @@ aws dynamodb create-table \
     --table-name ToggleMasterAnalytics \
     --attribute-definitions \
         AttributeName=event_id,AttributeType=S \
+        AttributeName=occurred_at,AttributeType=S \
     --key-schema \
         AttributeName=event_id,KeyType=HASH \
+        AttributeName=occurred_at,KeyType=RANGE \
     --provisioned-throughput \
         ReadCapacityUnits=1,WriteCapacityUnits=1
 ```
